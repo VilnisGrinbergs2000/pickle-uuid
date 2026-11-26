@@ -1,0 +1,24 @@
+import { newV4, newV7, parse } from pickle_uuid
+
+fn main() {
+    match (newV7()) {
+        case some(id) -> {
+            println("v7 " + id.toString())
+            println("   version " + str(id.version()) + ", variant " + id.variant())
+            if (let some(ms) = id.timestampMs()) {
+                println("   unix ms " + str(ms))
+            }
+        }
+        case none -> println("v7: OS randomness unavailable")
+    }
+
+    match (newV4()) {
+        case some(id) -> println("v4 " + id.toString())
+        case none -> println("v4: OS randomness unavailable")
+    }
+
+    match (parse("6ba7b810-9dad-11d1-80b4-00c04fd430c8")) {
+        case some(id) -> println("v1 " + id.toUrn())
+        case none -> println("parse failed")
+    }
+}

@@ -1,0 +1,19 @@
+[package]
+name = "vilnisgrinbergs2000/pickle-uuid"
+version = "1.0.0"
+description = "RFC 9562 UUIDs for PickleScript: v4, v7, parsing, formatting, and ordering."
+authors = ["Vilnis Grinbergs"]
+license = "MIT"
+homepage = "https://github.com/VilnisGrinbergs2000/pickle-uuid"
+repository = "https://github.com/VilnisGrinbergs2000/pickle-uuid"
+keywords = ["uuid", "guid", "rfc9562", "random", "identifier"]
+
+[paths]
+packages = ".pickle/packages"
+cache = ".pickle/cache"
+registry = ".pickle/registry"
+
+[registry]
+default = "https://picklescript.dpdns.org/api"
+
+[dependencies]

@@ -1,0 +1,4 @@
+.pickle/
+*.exe
+*.obj
+*.pdb

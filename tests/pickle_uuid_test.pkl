@@ -1,0 +1,160 @@
+module tests.pickle_uuid_test
+
+import { Uuid, parse, isValid, newV4, newV7, fromBytes, nilUuid, maxUuid } from pickle_uuid
+import { unixMillis } from std.time
+
+test fn parses_the_canonical_form() {
+    if (let some(id) = parse("6ba7b810-9dad-11d1-80b4-00c04fd430c8")) {
+        expect(id.toString()).toBe("6ba7b810-9dad-11d1-80b4-00c04fd430c8")
+        expect(id.version()).toBe(1)
+        expect(id.variant()).toBe("rfc9562")
+    } else {
+        expect(false).toBe(true)
+    }
+}
+
+test fn parses_compact_and_uppercase_forms() {
+    if (let some(id) = parse("6BA7B8109DAD11D180B400C04FD430C8")) {
+        expect(id.toString()).toBe("6ba7b810-9dad-11d1-80b4-00c04fd430c8")
+    } else {
+        expect(false).toBe(true)
+    }
+}
+
+test fn parses_urn_and_braced_forms() {
+    if (let some(id) = parse("urn:uuid:6ba7b810-9dad-11d1-80b4-00c04fd430c8")) {
+        expect(id.toUrn()).toBe("urn:uuid:6ba7b810-9dad-11d1-80b4-00c04fd430c8")
+    } else {
+        expect(false).toBe(true)
+    }
+    if (let some(id) = parse("{{6ba7b810-9dad-11d1-80b4-00c04fd430c8}}")) {
+        expect(id.toString()).toBe("6ba7b810-9dad-11d1-80b4-00c04fd430c8")
+    } else {
+        expect(false).toBe(true)
+    }
+    if (let some(id) = parse("  {{6BA7B810-9DAD-11D1-80B4-00C04FD430C8}}  ")) {
+        expect(id.toString()).toBe("6ba7b810-9dad-11d1-80b4-00c04fd430c8")
+    } else {
+        expect(false).toBe(true)
+    }
+}
+
+test fn rejects_invalid_text() {
+    let bad = [
+        "",
+        "not-a-uuid",
+        "6ba7b810-9dad-11d1-80b4-00c04fd430c",
+        "6ba7b810-9dad-11d1-80b4-00c04fd430c88",
+        "6ba7b8109dad11d180b400c04fd430cg",
+        "6ba7b810-9dad-11d1-80b4-00c04fd430c8-",
+        "6ba7b81-09dad-11d1-80b4-00c04fd430c8",
+        "{{6ba7b810-9dad-11d1-80b4-00c04fd430c8",
+    ]
+    for (s in bad) {
+        expect(isValid(s)).toBe(false)
+    }
+}
+
+test fn nil_and_max_are_well_known() {
+    let z = nilUuid()
+    expect(z.toString()).toBe("00000000-0000-0000-0000-000000000000")
+    expect(z.isNil()).toBe(true)
+    expect(z.version()).toBe(0)
+    expect(z.variant()).toBe("ncs")
+
+    let m = maxUuid()
+    expect(m.toString()).toBe("ffffffff-ffff-ffff-ffff-ffffffffffff")
+    expect(m.isNil()).toBe(false)
+    expect(m.variant()).toBe("future")
+}
+
+test fn reports_all_variant_classes() {
+    let ncs = parse("00000000-0000-0000-0000-000000000000") ?? nilUuid()
+    let rfc = parse("00000000-0000-0000-8000-000000000000") ?? nilUuid()
+    let microsoft = parse("00000000-0000-0000-c000-000000000000") ?? nilUuid()
+    let future = parse("00000000-0000-0000-e000-000000000000") ?? nilUuid()
+    expect(ncs.variant()).toBe("ncs")
+    expect(rfc.variant()).toBe("rfc9562")
+    expect(microsoft.variant()).toBe("microsoft")
+    expect(future.variant()).toBe("future")
+}
+
+test fn compares_in_byte_order() {
+    let a = parse("00000000-0000-0000-0000-000000000001") ?? nilUuid()
+    let b = parse("00000000-0000-0000-0000-000000000002") ?? nilUuid()
+    let c = parse("ffffffff-ffff-ffff-ffff-ffffffffffff") ?? maxUuid()
+    expect(a.compare(b)).toBe(-1)
+    expect(b.compare(a)).toBe(1)
+    expect(a.compare(a)).toBe(0)
+    expect(a.equals(parse("00000000-0000-0000-0000-000000000001") ?? maxUuid())).toBe(true)
+    expect(a.equals(b)).toBe(false)
+    expect(b.compare(c)).toBe(-1)
+}
+
+test fn copies_input_bytes() {
+    let original = parse("6ba7b810-9dad-11d1-80b4-00c04fd430c8") ?? nilUuid()
+    var data = original.bytes()
+    let copy = fromBytes(data) ?? nilUuid()
+    data[0] = 0 as byte
+    expect(original.toString()).toBe("6ba7b810-9dad-11d1-80b4-00c04fd430c8")
+    expect(copy.toString()).toBe("6ba7b810-9dad-11d1-80b4-00c04fd430c8")
+
+    match (fromBytes(bytes("short"))) {
+        case none -> expect(true).toBe(true)
+        case some(_) -> expect(false).toBe(true)
+    }
+}
+
+test fn v4_has_version_and_rfc_variant() {
+    var seen = Map<string, bool>()
+    var i = 0
+    while (i < 256) {
+        match (newV4()) {
+            case some(id) -> {
+                expect(id.version()).toBe(4)
+                expect(id.variant()).toBe("rfc9562")
+                let text = id.toString()
+                expect(text in seen).toBe(false)
+                seen[text] = true
+            }
+            case none -> expect(false).toBe(true)
+        }
+        i = i + 1
+    }
+    expect(len(seen)).toBe(256)
+}
+
+test fn v7_has_version_variant_and_timestamp() {
+    let before = unixMillis()
+    let id = newV7() ?? nilUuid()
+    let after = unixMillis()
+    expect(id.version()).toBe(7)
+    expect(id.variant()).toBe("rfc9562")
+    if (let some(ms) = id.timestampMs()) {
+        expect(ms >= before).toBe(true)
+        expect(ms <= after).toBe(true)
+    } else {
+        expect(false).toBe(true)
+    }
+}
+
+test fn timestamp_is_only_for_v7() {
+    let id = newV4() ?? nilUuid()
+    match (id.timestampMs()) {
+        case none -> expect(true).toBe(true)
+        case some(_) -> expect(false).toBe(true)
+    }
+}
+
+test fn v7_values_are_unique() {
+    var seen = Map<string, bool>()
+    var i = 0
+    while (i < 128) {
+        let id = newV7() ?? nilUuid()
+        let text = id.toString()
+        expect(text in seen).toBe(false)
+        seen[text] = true
+        i = i + 1
+    }
+    expect(len(seen)).toBe(128)
+}

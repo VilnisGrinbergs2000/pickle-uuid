@@ -1,0 +1,294 @@
+module pickle_uuid
+
+// RFC 9562 UUIDs for PickleScript.
+//
+// `Uuid` stores the 16 bytes of a UUID in network order. `parse` accepts the
+// canonical hyphenated form, the compact 32-digit form, an optional
+// `urn:uuid:` prefix, and optional braces. Output is always lowercase
+// canonical text.
+//
+// `newV4` draws 122 random bits from the operating system CSPRNG
+// (`std.crypto.randomBytes`). `newV7` puts the current Unix millisecond
+// timestamp in the first 48 bits and fills the remaining 74 bits from the same
+// CSPRNG.
+//
+// v7 IDs sort by their timestamp prefix, but the 74 random bits mean two IDs
+// created in the same millisecond are not ordered. This library deliberately
+// keeps no process-wide monotonic counter, so it has no shared mutable state
+// and is safe to use from any thread.
+
+import { randomBytes } from std.crypto
+import { unixMillis } from std.time
+
+/// Bytes in a UUID.
+const UUID_BYTES: int = 16
+
+const HEX_DIGITS: string = "0123456789abcdef"
+
+fn hexDigit(v: int) -> string {
+    HEX_DIGITS.substring(v, v + 1)
+}
+
+fn hexByte(v: int) -> string {
+    hexDigit((v >> 4) & 0x0F) + hexDigit(v & 0x0F)
+}
+
+fn hexValue(b: int) -> int {
+    if (b >= 0x30 && b <= 0x39) {
+        return b - 0x30
+    }
+    if (b >= 0x41 && b <= 0x46) {
+        return b - 0x41 + 10
+    }
+    if (b >= 0x61 && b <= 0x66) {
+        return b - 0x61 + 10
+    }
+    -1
+}
+
+fn copyBytes(data: List<byte>) -> List<byte> {
+    var out = bytes("")
+    for (b in data) {
+        out.push(b)
+    }
+    out
+}
+
+fn bytesOfHex(text: string) -> List<byte>? {
+    if (len(text) % 2 != 0) {
+        return none
+    }
+    let bs = bytes(text)
+    var out = bytes("")
+    var i = 0
+    while (i < len(bs)) {
+        let hi = hexValue(bs[i] as int)
+        let lo = hexValue(bs[i + 1] as int)
+        if (hi < 0 || lo < 0) {
+            return none
+        }
+        out.push(((hi << 4) | lo) as byte)
+        i = i + 2
+    }
+    out
+}
+
+fn filled(v: int) -> List<byte> {
+    var out = bytes("")
+    var i = 0
+    while (i < UUID_BYTES) {
+        out.push(v as byte)
+        i = i + 1
+    }
+    out
+}
+
+/// A 128-bit universally unique identifier (RFC 9562).
+///
+/// Build values with `parse`, `fromBytes`, `newV4`, `newV7`, `nilUuid`, or
+/// `maxUuid`. The raw constructor copies its input but trusts that it holds
+/// exactly 16 bytes.
+class Uuid {
+    /// The 16 bytes in network (big-endian) order.
+    var raw: List<byte>
+
+    constructor(raw: List<byte>) {
+        this.raw = copyBytes(raw)
+    }
+
+    /// A fresh copy of the 16 bytes.
+    fn bytes() -> List<byte> {
+        copyBytes(this.raw)
+    }
+
+    /// The RFC 9562 version nibble: 0 for the nil UUID, 1-8 for a versioned
+    /// UUID, and the raw nibble for any other value.
+    fn version() -> int {
+        (this.raw[6] as int) >> 4
+    }
+
+    /// The variant class: `"ncs"`, `"rfc9562"`, `"microsoft"`, or `"future"`.
+    fn variant() -> string {
+        let b = this.raw[8] as int
+        if ((b & 0x80) == 0) {
+            return "ncs"
+        }
+        if ((b & 0xC0) == 0x80) {
+            return "rfc9562"
+        }
+        if ((b & 0xE0) == 0xC0) {
+            return "microsoft"
+        }
+        "future"
+    }
+
+    /// Whether every byte is zero (the nil UUID).
+    fn isNil() -> bool {
+        for (b in this.raw) {
+            if ((b as int) != 0) {
+                return false
+            }
+        }
+        true
+    }
+
+    /// Compare two UUIDs in byte order: `-1`, `0`, or `1`. For v7 values this
+    /// is the same order as their timestamp prefixes, with ties broken by the
+    /// random tail.
+    fn compare(other: Uuid) -> int {
+        var i = 0
+        while (i < UUID_BYTES) {
+            let a = this.raw[i] as int
+            let b = other.raw[i] as int
+            if (a < b) {
+                return -1
+            }
+            if (a > b) {
+                return 1
+            }
+            i = i + 1
+        }
+        0
+    }
+
+    /// Byte-for-byte equality.
+    fn equals(other: Uuid) -> bool {
+        this.compare(other) == 0
+    }
+
+    /// The 48-bit Unix millisecond timestamp of a v7 UUID, or `none` for every
+    /// other version.
+    fn timestampMs() -> int? {
+        if (this.version() != 7) {
+            return none
+        }
+        var ms = 0
+        var i = 0
+        while (i < 6) {
+            ms = (ms << 8) | (this.raw[i] as int)
+            i = i + 1
+        }
+        ms
+    }
+
+    /// Lowercase 32-digit hexadecimal text, without hyphens.
+    fn toHex() -> string {
+        var out = ""
+        for (b in this.raw) {
+            out = out + hexByte(b as int)
+        }
+        out
+    }
+
+    /// Lowercase canonical `8-4-4-4-12` text.
+    fn toString() -> string {
+        let h = this.toHex()
+        h.substring(0, 8) + "-" + h.substring(8, 12) + "-" + h.substring(12, 16) + "-" + h.substring(16, 20) + "-" + h.substring(20, 32)
+    }
+
+    /// The `urn:uuid:` form of the canonical text.
+    fn toUrn() -> string {
+        "urn:uuid:" + this.toString()
+    }
+}
+
+/// Parse a UUID from canonical text, compact 32-digit hex, a `urn:uuid:`
+/// string, or a braced canonical string. Whitespace around the value and
+/// around the URN/braced payload is ignored, and hex digits may be either
+/// case. Returns `none` for anything else.
+fn parse(text: string) -> Uuid? {
+    var s = text.trim()
+    if (s.startsWith("\{") && s.endsWith("\}")) {
+        s = s.substring(1, len(s) - 1).trim()
+    }
+    s = s.toLower()
+    if (s.startsWith("urn:uuid:")) {
+        s = s.substring(9, len(s)).trim()
+    }
+    if (len(s) == 36) {
+        if (s.substring(8, 9) != "-" || s.substring(13, 14) != "-" || s.substring(18, 19) != "-" || s.substring(23, 24) != "-") {
+            return none
+        }
+        s = s.replace("-", "")
+    }
+    if (len(s) != 32) {
+        return none
+    }
+    match (bytesOfHex(s)) {
+        case some(data) -> {
+            if (len(data) != UUID_BYTES) {
+                return none
+            }
+            Uuid(data)
+        }
+        case none -> none
+    }
+}
+
+/// Whether `text` parses as a UUID.
+fn isValid(text: string) -> bool {
+    match (parse(text)) {
+        case some(_) -> true
+        case none -> false
+    }
+}
+
+/// Build a UUID from exactly 16 bytes in network order. The bytes are copied;
+/// a list of any other length yields `none`.
+fn fromBytes(data: List<byte>) -> Uuid? {
+    if (len(data) != UUID_BYTES) {
+        return none
+    }
+    Uuid(data)
+}
+
+/// The all-zero UUID (`00000000-0000-0000-0000-000000000000`).
+fn nilUuid() -> Uuid {
+    Uuid(filled(0))
+}
+
+/// The all-ones UUID (`ffffffff-ffff-ffff-ffff-ffffffffffff`).
+fn maxUuid() -> Uuid {
+    Uuid(filled(255))
+}
+
+/// Generate a version 4 (random) UUID from the operating system CSPRNG, or
+/// `none` when the CSPRNG is unavailable.
+fn newV4() -> Uuid? {
+    match (randomBytes(UUID_BYTES)) {
+        case some(raw) -> {
+            raw[6] = (((raw[6] as int) & 0x0F) | 0x40) as byte
+            raw[8] = (((raw[8] as int) & 0x3F) | 0x80) as byte
+            Uuid(raw)
+        }
+        case none -> none
+    }
+}
+
+/// Generate a version 7 (time-ordered) UUID: 48 bits of Unix milliseconds,
+/// then 74 bits from the operating system CSPRNG. Returns `none` when the
+/// CSPRNG is unavailable.
+fn newV7() -> Uuid? {
+    let ms = unixMillis()
+    match (randomBytes(10)) {
+        case some(r) -> {
+            var data = bytes("")
+            data.push(((ms >> 40) & 0xFF) as byte)
+            data.push(((ms >> 32) & 0xFF) as byte)
+            data.push(((ms >> 24) & 0xFF) as byte)
+            data.push(((ms >> 16) & 0xFF) as byte)
+            data.push(((ms >> 8) & 0xFF) as byte)
+            data.push((ms & 0xFF) as byte)
+            data.push((0x70 | ((r[0] as int) & 0x0F)) as byte)
+            data.push(r[1])
+            data.push((0x80 | ((r[2] as int) & 0x3F)) as byte)
+            var i = 3
+            while (i < 10) {
+                data.push(r[i])
+                i = i + 1
+            }
+            Uuid(data)
+        }
+        case none -> none
+    }
+}
